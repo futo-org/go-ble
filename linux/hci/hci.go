@@ -123,24 +123,7 @@ type HCI struct {
 
 // Init ...
 func (h *HCI) Init() error {
-	h.evth[0x3E] = h.handleLEMeta
-	h.evth[evt.CommandCompleteCode] = h.handleCommandComplete
-	h.evth[evt.CommandStatusCode] = h.handleCommandStatus
-	h.evth[evt.DisconnectionCompleteCode] = h.handleDisconnectionComplete
-	h.evth[evt.NumberOfCompletedPacketsCode] = h.handleNumberOfCompletedPackets
-
-	h.subh[evt.LEAdvertisingReportSubCode] = h.handleLEAdvertisingReport
-	h.subh[evt.LEConnectionCompleteSubCode] = h.handleLEConnectionComplete
-	h.subh[evt.LEConnectionUpdateCompleteSubCode] = h.handleLEConnectionUpdateComplete
-	h.subh[evt.LELongTermKeyRequestSubCode] = h.handleLELongTermKeyRequest
-	// evt.EncryptionChangeCode:                     todo),
-	// evt.ReadRemoteVersionInformationCompleteCode: todo),
-	// evt.HardwareErrorCode:                        todo),
-	// evt.DataBufferOverflowCode:                   todo),
-	// evt.EncryptionKeyRefreshCompleteCode:         todo),
-	// evt.AuthenticatedPayloadTimeoutExpiredCode:   todo),
-	// evt.LEReadRemoteUsedFeaturesCompleteSubCode:   todo),
-	// evt.LERemoteConnectionParameterRequestSubCode: todo),
+	h.registerHandlers()
 
 	skt, err := socket.NewSocket(h.id)
 	if err != nil {
@@ -162,6 +145,27 @@ func (h *HCI) Init() error {
 	h.Send(&h.params.advParams, nil)
 	h.Send(&h.params.scanParams, nil)
 	return nil
+}
+
+func (h *HCI) registerHandlers() {
+	h.evth[0x3E] = h.handleLEMeta
+	h.evth[evt.CommandCompleteCode] = h.handleCommandComplete
+	h.evth[evt.CommandStatusCode] = h.handleCommandStatus
+	h.evth[evt.DisconnectionCompleteCode] = h.handleDisconnectionComplete
+	h.evth[evt.NumberOfCompletedPacketsCode] = h.handleNumberOfCompletedPackets
+
+	h.subh[evt.LEAdvertisingReportSubCode] = h.handleLEAdvertisingReport
+	h.subh[evt.LEConnectionCompleteSubCode] = h.handleLEConnectionComplete
+	h.subh[evt.LEConnectionUpdateCompleteSubCode] = h.handleLEConnectionUpdateComplete
+	h.subh[evt.LELongTermKeyRequestSubCode] = h.handleLELongTermKeyRequest
+	// evt.EncryptionChangeCode:                     todo),
+	// evt.ReadRemoteVersionInformationCompleteCode: todo),
+	// evt.HardwareErrorCode:                        todo),
+	// evt.DataBufferOverflowCode:                   todo),
+	// evt.EncryptionKeyRefreshCompleteCode:         todo),
+	// evt.AuthenticatedPayloadTimeoutExpiredCode:   todo),
+	// evt.LEReadRemoteUsedFeaturesCompleteSubCode:   todo),
+	// evt.LERemoteConnectionParameterRequestSubCode: todo),
 }
 
 // Close ...
