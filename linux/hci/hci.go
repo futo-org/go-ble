@@ -50,10 +50,12 @@ func NewHCI(opts ...ble.Option) (*HCI, error) {
 
 		muConns:      &sync.Mutex{},
 		conns:        make(map[uint16]*Conn),
+		heldACL:      make(map[uint16][]heldPacket),
 		chMasterConn: make(chan *Conn),
 		chSlaveConn:  make(chan *Conn),
 
 		done: make(chan bool),
+		now:  time.Now,
 	}
 	h.params.init()
 	if err := h.Option(opts...); err != nil {
@@ -108,6 +110,7 @@ type HCI struct {
 	// L2CAP connections
 	muConns      *sync.Mutex
 	conns        map[uint16]*Conn
+	heldACL      map[uint16][]heldPacket
 	chMasterConn chan *Conn // Dial returns master connections.
 	chSlaveConn  chan *Conn // Peripheral accept slave connections.
 
@@ -119,6 +122,7 @@ type HCI struct {
 
 	err  error
 	done chan bool
+	now  func() time.Time
 }
 
 // Init ...
@@ -360,17 +364,41 @@ func (h *HCI) handlePkt(b []byte) error {
 	}
 }
 
+type heldPacket struct {
+	at  time.Time
+	pkt []byte
+}
+
 func (h *HCI) handleACL(b []byte) error {
 	handle := packet(b).handle()
 	h.muConns.Lock()
 	c, ok := h.conns[handle]
-	h.muConns.Unlock()
 	if !ok {
-		_ = logger.Warn("invalid connection handle on ACL packet", "handle", handle)
+		h.holdACL(handle, b)
+		h.muConns.Unlock()
 		return nil
 	}
+	h.muConns.Unlock()
 	c.chInPkt <- b
 	return nil
+}
+
+func (h *HCI) holdACL(handle uint16, b []byte) {
+	if len(h.heldACL[handle]) == maxHeldACLPackets {
+		_ = logger.Warn("too many ACL packets before connection complete", "handle", handle)
+		return
+	}
+	h.heldACL[handle] = append(h.heldACL[handle], heldPacket{at: h.now(), pkt: b})
+}
+
+func (h *HCI) replayACL(c *Conn, held []heldPacket) {
+	for _, p := range held {
+		if h.now().Sub(p.at) > aclHoldTime {
+			_ = logger.Warn("stale ACL packet before connection complete", "handle", packet(p.pkt).handle())
+			continue
+		}
+		c.chInPkt <- p.pkt
+	}
 }
 
 func (h *HCI) handleEvt(b []byte) error {
@@ -492,7 +520,10 @@ func (h *HCI) handleLEConnectionComplete(b []byte) error {
 	c := newConn(h, e)
 	h.muConns.Lock()
 	h.conns[e.ConnectionHandle()] = c
+	held := h.heldACL[e.ConnectionHandle()]
+	delete(h.heldACL, e.ConnectionHandle())
 	h.muConns.Unlock()
+	h.replayACL(c, held)
 	if e.Role() == roleMaster {
 		if e.Status() == 0x00 {
 			select {
