@@ -567,6 +567,7 @@ func (h *HCI) handleDisconnectionComplete(b []byte) error {
 	h.muConns.Lock()
 	c, found := h.conns[e.ConnectionHandle()]
 	delete(h.conns, e.ConnectionHandle())
+	delete(h.heldACL, e.ConnectionHandle())
 	h.muConns.Unlock()
 	if !found {
 		return fmt.Errorf("disconnecting an invalid handle %04X", e.ConnectionHandle())

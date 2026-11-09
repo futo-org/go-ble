@@ -84,6 +84,15 @@ func leConnectionCompletePacket() []byte {
 	}
 }
 
+func disconnectionCompletePacket() []byte {
+	return []byte{
+		pktTypeEvent, evt.DisconnectionCompleteCode, 4,
+		0x00,
+		byte(testConnectionHandle), byte(testConnectionHandle >> 8),
+		0x13,
+	}
+}
+
 func writeCommand(handle byte) []byte {
 	return []byte{0x52, handle, 0x00, 0xaa}
 }
@@ -183,6 +192,24 @@ func TestHCI_DropsRequestHeldLongerThanHoldTime(t *testing.T) {
 	skt.in <- aclPacket(writeCommand(0))
 	skt.in <- ignoredEventPacket
 	now = start.Add(101 * time.Millisecond)
+	skt.in <- leConnectionCompletePacket()
+	c := accept(t, h)
+	skt.in <- aclPacket(readByGroupTypeRequest)
+
+	if got := readRequest(t, c); !bytes.Equal(got, readByGroupTypeRequest) {
+		t.Fatalf("connection read % X, expected % X", got, readByGroupTypeRequest)
+	}
+}
+
+func TestHCI_DropsRequestHeldForADisconnectedHandle(t *testing.T) {
+	t.Parallel()
+	h, skt := newTestHCI(t)
+	defer skt.Close()
+	start := time.Unix(0, 0)
+	h.now = func() time.Time { return start }
+
+	skt.in <- aclPacket(writeCommand(0))
+	skt.in <- disconnectionCompletePacket()
 	skt.in <- leConnectionCompletePacket()
 	c := accept(t, h)
 	skt.in <- aclPacket(readByGroupTypeRequest)
