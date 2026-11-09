@@ -1,5 +1,7 @@
 package hci
 
+import "time"
+
 // HCI Packet types
 const (
 	pktTypeCommand uint8 = 0x01
@@ -27,4 +29,9 @@ const (
 const (
 	roleMaster = 0x00
 	roleSlave  = 0x01
+)
+
+const (
+	maxHeldACLPackets = 8
+	aclHoldTime       = 100 * time.Millisecond
 )

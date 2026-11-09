@@ -50,10 +50,12 @@ func NewHCI(opts ...ble.Option) (*HCI, error) {
 
 		muConns:      &sync.Mutex{},
 		conns:        make(map[uint16]*Conn),
+		heldACL:      make(map[uint16][]heldPacket),
 		chMasterConn: make(chan *Conn),
 		chSlaveConn:  make(chan *Conn),
 
 		done: make(chan bool),
+		now:  time.Now,
 	}
 	h.params.init()
 	if err := h.Option(opts...); err != nil {
@@ -108,6 +110,7 @@ type HCI struct {
 	// L2CAP connections
 	muConns      *sync.Mutex
 	conns        map[uint16]*Conn
+	heldACL      map[uint16][]heldPacket
 	chMasterConn chan *Conn // Dial returns master connections.
 	chSlaveConn  chan *Conn // Peripheral accept slave connections.
 
@@ -119,28 +122,12 @@ type HCI struct {
 
 	err  error
 	done chan bool
+	now  func() time.Time
 }
 
 // Init ...
 func (h *HCI) Init() error {
-	h.evth[0x3E] = h.handleLEMeta
-	h.evth[evt.CommandCompleteCode] = h.handleCommandComplete
-	h.evth[evt.CommandStatusCode] = h.handleCommandStatus
-	h.evth[evt.DisconnectionCompleteCode] = h.handleDisconnectionComplete
-	h.evth[evt.NumberOfCompletedPacketsCode] = h.handleNumberOfCompletedPackets
-
-	h.subh[evt.LEAdvertisingReportSubCode] = h.handleLEAdvertisingReport
-	h.subh[evt.LEConnectionCompleteSubCode] = h.handleLEConnectionComplete
-	h.subh[evt.LEConnectionUpdateCompleteSubCode] = h.handleLEConnectionUpdateComplete
-	h.subh[evt.LELongTermKeyRequestSubCode] = h.handleLELongTermKeyRequest
-	// evt.EncryptionChangeCode:                     todo),
-	// evt.ReadRemoteVersionInformationCompleteCode: todo),
-	// evt.HardwareErrorCode:                        todo),
-	// evt.DataBufferOverflowCode:                   todo),
-	// evt.EncryptionKeyRefreshCompleteCode:         todo),
-	// evt.AuthenticatedPayloadTimeoutExpiredCode:   todo),
-	// evt.LEReadRemoteUsedFeaturesCompleteSubCode:   todo),
-	// evt.LERemoteConnectionParameterRequestSubCode: todo),
+	h.registerHandlers()
 
 	skt, err := socket.NewSocket(h.id)
 	if err != nil {
@@ -162,6 +149,27 @@ func (h *HCI) Init() error {
 	h.Send(&h.params.advParams, nil)
 	h.Send(&h.params.scanParams, nil)
 	return nil
+}
+
+func (h *HCI) registerHandlers() {
+	h.evth[0x3E] = h.handleLEMeta
+	h.evth[evt.CommandCompleteCode] = h.handleCommandComplete
+	h.evth[evt.CommandStatusCode] = h.handleCommandStatus
+	h.evth[evt.DisconnectionCompleteCode] = h.handleDisconnectionComplete
+	h.evth[evt.NumberOfCompletedPacketsCode] = h.handleNumberOfCompletedPackets
+
+	h.subh[evt.LEAdvertisingReportSubCode] = h.handleLEAdvertisingReport
+	h.subh[evt.LEConnectionCompleteSubCode] = h.handleLEConnectionComplete
+	h.subh[evt.LEConnectionUpdateCompleteSubCode] = h.handleLEConnectionUpdateComplete
+	h.subh[evt.LELongTermKeyRequestSubCode] = h.handleLELongTermKeyRequest
+	// evt.EncryptionChangeCode:                     todo),
+	// evt.ReadRemoteVersionInformationCompleteCode: todo),
+	// evt.HardwareErrorCode:                        todo),
+	// evt.DataBufferOverflowCode:                   todo),
+	// evt.EncryptionKeyRefreshCompleteCode:         todo),
+	// evt.AuthenticatedPayloadTimeoutExpiredCode:   todo),
+	// evt.LEReadRemoteUsedFeaturesCompleteSubCode:   todo),
+	// evt.LERemoteConnectionParameterRequestSubCode: todo),
 }
 
 // Close ...
@@ -356,17 +364,41 @@ func (h *HCI) handlePkt(b []byte) error {
 	}
 }
 
+type heldPacket struct {
+	at  time.Time
+	pkt []byte
+}
+
 func (h *HCI) handleACL(b []byte) error {
 	handle := packet(b).handle()
 	h.muConns.Lock()
 	c, ok := h.conns[handle]
-	h.muConns.Unlock()
 	if !ok {
-		_ = logger.Warn("invalid connection handle on ACL packet", "handle", handle)
+		h.holdACL(handle, b)
+		h.muConns.Unlock()
 		return nil
 	}
+	h.muConns.Unlock()
 	c.chInPkt <- b
 	return nil
+}
+
+func (h *HCI) holdACL(handle uint16, b []byte) {
+	if len(h.heldACL[handle]) == maxHeldACLPackets {
+		_ = logger.Warn("too many ACL packets before connection complete", "handle", handle)
+		return
+	}
+	h.heldACL[handle] = append(h.heldACL[handle], heldPacket{at: h.now(), pkt: b})
+}
+
+func (h *HCI) replayACL(c *Conn, held []heldPacket) {
+	for _, p := range held {
+		if h.now().Sub(p.at) > aclHoldTime {
+			_ = logger.Warn("stale ACL packet before connection complete", "handle", packet(p.pkt).handle())
+			continue
+		}
+		c.chInPkt <- p.pkt
+	}
 }
 
 func (h *HCI) handleEvt(b []byte) error {
@@ -488,7 +520,10 @@ func (h *HCI) handleLEConnectionComplete(b []byte) error {
 	c := newConn(h, e)
 	h.muConns.Lock()
 	h.conns[e.ConnectionHandle()] = c
+	held := h.heldACL[e.ConnectionHandle()]
+	delete(h.heldACL, e.ConnectionHandle())
 	h.muConns.Unlock()
+	h.replayACL(c, held)
 	if e.Role() == roleMaster {
 		if e.Status() == 0x00 {
 			select {
@@ -532,6 +567,7 @@ func (h *HCI) handleDisconnectionComplete(b []byte) error {
 	h.muConns.Lock()
 	c, found := h.conns[e.ConnectionHandle()]
 	delete(h.conns, e.ConnectionHandle())
+	delete(h.heldACL, e.ConnectionHandle())
 	h.muConns.Unlock()
 	if !found {
 		return fmt.Errorf("disconnecting an invalid handle %04X", e.ConnectionHandle())
