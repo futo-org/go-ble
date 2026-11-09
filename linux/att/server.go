@@ -199,6 +199,9 @@ func (s *Server) handleRequest(b []byte) []byte {
 		resp = s.handlePrepareWriteRequest(b)
 	case ExecuteWriteRequestCode:
 		resp = s.handleExecuteWriteRequest(b)
+	case HandleValueIndicationCode:
+		resp = []byte{HandleValueConfirmationCode}
+	case HandleValueNotificationCode:
 	case ReadMultipleRequestCode,
 		SignedWriteCommandCode:
 		fallthrough
